@@ -5,7 +5,7 @@ import java.awt.Color;
 import java.awt.Graphics;
 import java.awt.BasicStroke;
 import java.awt.Graphics2D;
-import java.awt.Image;
+import java.awt.Rectangle;
 import java.awt.event.ActionEvent;
 import java.awt.event.ActionListener;
 import java.awt.event.KeyAdapter;
@@ -16,47 +16,68 @@ import java.util.Iterator;
 import javax.swing.JPanel;
 import javax.swing.Timer;
 
+import com.zombs.buildings.Building;
+import com.zombs.buildings.GenericBuilding;
+import com.zombs.buildings.Shop;
+
+import java.awt.event.ComponentAdapter;
+import java.awt.event.ComponentEvent;
+
 public class GamePanel extends JPanel {
 
-    private int offsetX = 0; // Offset for the grid's X position
-    private int offsetY = 0; // Offset for the grid's Y position
+    public static int offsetX = 0; // Offset for the grid's X position
+    public static int offsetY = 0; // Offset for the grid's Y position
     private int MOVE_SPEED = 6; // Speed of movement
     private final int GRID_SIZE = 50; // Size of each grid cell
     private final int[] X_Bounds = { -2000, 2000 };
     private final int[] Y_Bounds = { -700, 700 };
     public static AffineTransform oldTransformation;
-    public static int screenWidth;
-    public static int screenHeight;
+    public static int screenWidth = 1920;
+    public static int screenHeight = 1080;
 
-    private boolean upPressed = false;
-    private boolean downPressed = false;
-    private boolean leftPressed = false;
-    private boolean rightPressed = false;
-    private boolean shootPressed = false;
+    public static boolean upPressed = false;
+    public static boolean downPressed = false;
+    public static boolean leftPressed = false;
+    public static boolean rightPressed = false;
+    public static boolean shootPressed = false;
 
-    private boolean idle = true;
+    public boolean idle = true;
 
-    Building building = new Building(500, 500, 200, 200);
-    Player player = new Player(100, 0, 0);
+    Building building = null;
+    Tree tree = null;
+    Player player = null;
+    Gun gun = null;
+    Shop shop = null;
+    Boundary boundary = new Boundary();
+    Screens screens = new Screens();
 
-    private int direction = 1; // 0 is up, 1 is right, 2 is down, 3 is left
+    public static int direction = 1; // 0 is up, 1 is right, 2 is down, 3 is left
     public static int gunMouthX, gunMouthY;
 
-    private ArrayList<Bullet> bullets = new ArrayList<>();
-
-    private int animationFrame = 0;
-    private Timer animationTimer;
+    private ArrayList<Zombie> zombies = new ArrayList<>(); // List to store zombies
+    private CollisionManager collisionManager;
 
     public GamePanel() {
+        this.addComponentListener(new ComponentAdapter() {
+            @Override
+            public void componentResized(ComponentEvent e) {
+                // This method is called when the JPanel is resized
+                System.out.println("GamePanel resized to: " + getSize());
+                screenHeight = getSize().height;
+                screenWidth = getSize().width;
+                // You can update or reposition components here if needed
+                revalidate();
+                initializeObjects();
+            }
+        });
+        // Ensure the frame and panel have been fully laid out
+
         setBackground(Theme.BG); // Set the background to green for the grid ground
-        setPreferredSize(new Dimension(800, 600)); // Set the game window size
+        setPreferredSize(new Dimension(1920, 1080)); // Set the game window size
 
-        // Load images
+        // Load all images: sprites, backgrounds, etc.
         Images.loadImages();
-
-        // set screen width and height
-        screenWidth = getWidth();
-        screenHeight = getHeight();
+        setFocusable(true); // Make sure the panel is focusable to receive key events
 
         // Key listener to control movement using WASD and shooting with space
         addKeyListener(new KeyAdapter() {
@@ -107,30 +128,120 @@ public class GamePanel extends JPanel {
             public void actionPerformed(ActionEvent e) {
                 moveMap();
                 if (shootPressed) {
-                    shootBullet();
+                    gun.shootBullet(player);
                     shootPressed = false; // Prevent continuous shooting
                 }
-                updateBullets();
-                calculateGunMouth();
+                updateGame();
                 repaint();
             }
         });
         timer.start();
 
-        // Animation timer for player running animation
-        animationTimer = new Timer(100, new ActionListener() { // 10 frames per second
+        // Delay initialization of objects to allow window to resize
+        Timer initTimer = new Timer(500, new ActionListener() { // 500ms delay
             @Override
-            public void actionPerformed(ActionEvent e) {
-                animationFrame = (animationFrame + 1) % Images.player_running.size();
+            public void actionPerformed(java.awt.event.ActionEvent e) {
+                initializeObjects();
             }
         });
-        animationTimer.start();
+        initTimer.setRepeats(false); // Only execute once
+        initTimer.start();
 
-        setFocusable(true); // Make sure the panel is focusable to receive key events
+        // Timer to decrease player's health, for testing purposes
+        // Timer healthTimer = new Timer(1000, new ActionListener() { // Decrease health
+        // every second
+        // @Override
+        // public void actionPerformed(java.awt.event.ActionEvent e) {
+        // player.decreaseHealth(1); // Decrease health by 1
+        // repaint(); // Repaint to update health bar
+        // }
+        // });
+        // healthTimer.start();
+    }
+
+    private void updateGame() {
+        updateZombies();
+        checkCollisions();
+        calculateGunMouth();
+        removeDeadZombies();
+    }
+
+    private void removeDeadZombies() {
+        Iterator<Zombie> zombieIterator = zombies.iterator();
+        while (zombieIterator.hasNext()) {
+            Zombie zombie = zombieIterator.next();
+            if (zombie.isDead) {
+                // add money to player
+                player.addCash(zombie.money);
+                zombieIterator.remove();
+            }
+        }
+    }
+
+    private void initializeObjects() {
+        // Initialize the player object
+        if (player == null && tree == null) {
+            tree = new Tree(500, 500, 232, 211);
+            player = new Player(100);
+            building = new GenericBuilding(500, 500, 200, 200);
+
+            collisionManager = new CollisionManager();
+            collisionManager.addCollidable(building);
+            collisionManager.addCollidable(shop);
+
+            gun = new Gun(10, 10, 1600, 30, 30, 2, 1);
+            shop = new Shop(300, 300, 200, 200);
+            // add 10 zombies at random positions
+            for (int i = 0; i < 10; i++) {
+                int x = (int) (Math.random() * 1000);
+                int y = (int) (Math.random() * 1000);
+                zombies.add(new Zombie(x, y));
+            }
+
+            zombies.add(new Zombie(300, 300)); // Spawn a zombie at position (300, 300)
+        }
+    }
+
+    private void print(String s) {
+        System.out.println(s);
+    }
+
+    private void checkCollisions() {
+        // check collisions between player and zombies
+        for (Zombie zombie : zombies) {
+            // System.out.println("Player x: " + player.getBounds().getX() + " y: " +
+            // player.getBounds().getY());
+            // print offset x and y
+            // System.out.println("offsetX: " + offsetX + " offsetY: " + offsetY);
+
+            // if zombie intersects with offset x and y
+            if (zombie.getBounds().intersects(player.getBounds())) {
+                print("Player collided with zombie");
+                player.decreaseHealth(1);
+            }
+        }
+
+        // check collisions between bullets and zombies
+        Iterator<Bullet> bulletIterator = Gun.bullets.iterator();
+        while (bulletIterator.hasNext()) {
+            Bullet bullet = bulletIterator.next();
+            Rectangle bulletBounds = bullet.getBounds();
+
+            for (Zombie zombie : zombies) {
+                Rectangle zombieBounds = zombie.getBounds();
+                // print("Zombie x: " + zombieBounds.getX() + " y: " + zombieBounds.getY());
+                if (bulletBounds.intersects(zombieBounds)) {
+                    print("Bullet collided with zombie");
+                    bulletIterator.remove();
+                    // Decrease the zombie's health
+                    zombie.takeDamage(10);
+                    break;
+                }
+            }
+        }
     }
 
     private void moveMap() {
-
         if (upPressed && offsetY < Y_Bounds[1]) {
             offsetY += MOVE_SPEED;
         }
@@ -146,8 +257,8 @@ public class GamePanel extends JPanel {
     }
 
     private void calculateGunMouth() {
-        int centerX = getWidth() / 2;
-        int centerY = getHeight() / 2;
+        int centerX = screenWidth / 2;
+        int centerY = screenHeight / 2;
 
         if (direction == -1) {
             gunMouthX = centerX - Images.gun.getWidth();
@@ -158,26 +269,10 @@ public class GamePanel extends JPanel {
         }
     }
 
-    private void shootBullet() {
-        // Graphics2D g2d = (Graphics2D) getGraphics();
-
-        // Create and add a new bullet
-        Bullet newBullet = new Bullet(gunMouthX, gunMouthY, direction);
-        bullets.add(newBullet);
-        // Show gunfire animation
-        // newBullet.showGunfire(g2d, gunMouthX, gunMouthY);
-    }
-
-    private void updateBullets() {
-        // Update bullets
-        Iterator<Bullet> iterator = bullets.iterator();
-        while (iterator.hasNext()) {
-            Bullet bullet = iterator.next();
-            bullet.update();
-            if (Math.abs(bullet.getX() - bullet.getStartX()) > bullet.getMaxDistance() ||
-                    Math.abs(bullet.getY() - bullet.getStartY()) > bullet.getMaxDistance()) {
-                iterator.remove();
-            }
+    private void updateZombies() {
+        // Update zombies
+        for (Zombie zombie : zombies) {
+            zombie.update(player);
         }
     }
 
@@ -185,12 +280,15 @@ public class GamePanel extends JPanel {
     protected void paintComponent(Graphics g) {
         super.paintComponent(g);
 
+        screenHeight = getHeight();
+        screenWidth = getWidth();
+
         Graphics2D g2d = (Graphics2D) g;
         oldTransformation = g2d.getTransform();
 
         // Get the center of the screen
-        int centerX = getWidth() / 2;
-        int centerY = getHeight() / 2;
+        int centerX = screenWidth / 2;
+        int centerY = screenHeight / 2;
 
         // Set the stroke width for the grid lines
         g2d.setStroke(new BasicStroke(4)); // Change the value to make the lines thicker or thinner
@@ -206,104 +304,54 @@ public class GamePanel extends JPanel {
 
         // Reset the transform
         g2d.setTransform(oldTransformation);
-
-        // Draw black rectangles over the areas outside the map boundaries
-        // Left and right boundaries
-        // red line for top and bottom boundaries
-
-        // Draw the map boundaries
-        // Calculate the map boundaries relative to the center of the screen
-        // left boundary should increase to the max of centerx as the player moves left
-        // the player
-        // should be centered on the screen
-
-        // monitor
-        // int leftBoundary = offsetX - centerX + 300;
-        // int rightBoundary = -(offsetX + centerX) - 300;
-        // int topBoundary = offsetY - centerY + 100;
-        // int bottomBoundary = -(offsetY + centerY) + 100;
-
         // macbook
         int leftBoundary = offsetX - centerX - centerX / 2;
         int rightBoundary = -(offsetX + centerX) - centerX / 2;
         int topBoundary = offsetY - centerY + 200;
         int bottomBoundary = -(offsetY + centerY) + 200;
 
-        // Draw black rectangles outside the map bounds
-        g2d.setColor(Color.BLACK);
-        // if left boundary is between zero and negative centerx
-        if (leftBoundary > 0) {
-            g2d.fillRect(0, 0, leftBoundary, getHeight());
-        }
-        // if right boundary is between centerx and width
-        if (rightBoundary > 0) {
-            g2d.fillRect(getWidth() - rightBoundary, 0, rightBoundary, getHeight());
-        }
-        // if top boundary is between zero and negative centery
-        if (topBoundary > 0) {
-            g2d.fillRect(0, 0, getWidth(), topBoundary);
-        }
-        // // if bottom boundary is between centery and height
-        if (bottomBoundary > 0) {
-            g2d.fillRect(0, getHeight() - bottomBoundary, getWidth(), bottomBoundary);
-        }
+        boundary.draw(g2d, leftBoundary, rightBoundary, topBoundary, bottomBoundary);
 
-        // Reset the transform
-        g2d.setTransform(oldTransformation);
-
-        int centerXPlayer = getWidth() / 2 - Images.player_idle.getWidth() / 2;
-        int centerYPlayer = getHeight() / 2 - Images.player_idle.getHeight() / 2;
-
-        // decide if player is running or idle and change sprite accordingly
-        Image playerImage = (upPressed || downPressed || leftPressed || rightPressed)
-                ? Images.player_running.get(animationFrame)
-                : Images.player_idle;
+        int centerXPlayer = screenWidth / 2 - Images.player_idle.getWidth() / 2;
+        int centerYPlayer = screenHeight / 2 - Images.player_idle.getHeight() / 2;
 
         // Draw the player image
-        player.draw(g2d, direction, idle, centerXPlayer, centerYPlayer, getHeight(), getWidth(), playerImage);
+        player.draw(g2d, direction, idle, centerXPlayer, centerYPlayer);
 
-        g2d.setTransform(oldTransformation);
+        // Draw the gun
+        gun.draw(g2d, centerXPlayer, centerYPlayer);
 
-        // Draw the gun image
-        if (direction == -1) {
-            g2d.translate(centerXPlayer - 70 + Images.player_idle.getWidth() / 2,
-                    centerYPlayer + 40 + Images.player_idle.getHeight() / 2);
-            g2d.scale(-1, -1);
-            g2d.drawImage(Images.gun, -Images.gun.getWidth(), -Images.gun.getHeight() / 2, null);
-        } else {
-            g2d.translate(centerXPlayer + Images.player_idle.getWidth() / 2,
-                    centerYPlayer + 40 + Images.player_idle.getHeight() / 2);
-            g2d.drawImage(Images.gun, 0, -Images.gun.getHeight() / 2, null);
-        }
-        g2d.setTransform(oldTransformation);
-
-        // Draw the bullets
-        for (Bullet bullet : bullets) {
-            bullet.draw(g2d);
+        // Draw the zombies
+        for (Zombie zombie : zombies) {
+            zombie.draw(g2d);
         }
 
         // test rectangle to gain mouth of gun
         g2d.setColor(Color.RED);
 
         g2d.drawRect(gunMouthX, gunMouthY, 5, 5);
+        tree.draw(g2d, getWidth(), getHeight());
+        shop.draw(g2d);
 
         // print text for offsety and offsetx in top left corner
         // bg black rect
-        g2d.setColor(Color.BLACK);
-        g2d.fillRect(0, 0, 200, 300);
-        g2d.setColor(Color.RED);
-        g2d.drawString("offsetX: " + offsetX + " offsetY: " + offsetY, 10, 20);
-        // centerx and centery
-        g2d.drawString("centerX: " + centerX + " centerY: " + centerY, 10, 40);
-        // print sizes
+        // g2d.setColor(Color.BLACK);
+        // g2d.fillRect(0, 0, 200, 300);
+        // g2d.setColor(Color.RED);
+        // g2d.drawString("offsetX: " + offsetX + " offsetY: " + offsetY, 10, 20);
+        // // centerx and centery
+        // g2d.drawString("centerX: " + centerX + " centerY: " + centerY, 10, 40);
+        // // print sizes
 
-        // print all boundaries
-        g2d.drawString("leftBoundary: " + leftBoundary, 10, 60);
-        g2d.drawString("rightBoundary: " + rightBoundary, 10, 80);
-        g2d.drawString("topBoundary: " + topBoundary, 10, 100);
-        g2d.drawString("bottomBoundary: " + bottomBoundary, 10, 120);
-        g2d.drawString("width: " + getWidth() + " height: " + getHeight(), 10, 140);
-        building.draw(g2d, offsetX, offsetY, getWidth(), getHeight());
+        // // print all boundaries
+        // g2d.drawString("leftBoundary: " + leftBoundary, 10, 60);
+        // g2d.drawString("rightBoundary: " + rightBoundary, 10, 80);
+        // g2d.drawString("topBoundary: " + topBoundary, 10, 100);
+        // g2d.drawString("bottomBoundary: " + bottomBoundary, 10, 120);
+        // g2d.drawString("width: " + getWidth() + " height: " + getHeight(), 10, 140);
+
+        player.bar.draw(g2d);
+        player.drawCash(g2d);
 
     }
 }
